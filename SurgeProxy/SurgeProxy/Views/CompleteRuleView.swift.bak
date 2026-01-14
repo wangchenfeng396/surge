@@ -1,0 +1,504 @@
+//
+//  CompleteRuleView.swift
+//  SurgeProxy
+//
+//  Complete Rule management view matching Surge's design
+//
+
+import SwiftUI
+
+struct CompleteRuleView: View {
+    @State var rules: [ProxyRule] = [
+        ProxyRule(type: .ipCidr, value: "10.10.72.0/23 (no-resolve)", policy: "工作", used: 60),
+        ProxyRule(type: .ipCidr, value: "192.168.66.0/24 (no-resolve)", policy: "国家", used: 547, comment: "国家"),
+        ProxyRule(type: .ruleSet, value: "https://raw.githubuse...ic/NetEaseMusic.list", policy: "网易超级", used: 3),
+        ProxyRule(type: .domainSuffix, value: "labs.google", policy: "AI专用", used: 0),
+        ProxyRule(type: .domainSuffix, value: "notebooklm.google.com", policy: "AI专用", used: 0),
+        ProxyRule(type: .domainSuffix, value: "notebooklm.google", policy: "AI专用", used: 0),
+        ProxyRule(type: .domain, value: "wan-pa.clients6.google.com", policy: "AI专用", used: 0),
+        ProxyRule(type: .domain, value: "www.googletagemanager.com", policy: "AI专用", used: 0),
+        ProxyRule(type: .domain, value: "gemini.google.com", policy: "AI专用", used: 0),
+        ProxyRule(type: .domain, value: "generativelanguage.googleapis.com", policy: "AI专用", used: 0, comment: "gemini"),
+        ProxyRule(type: .domain, value: "mail.09.edu.kg", policy: "DIRECT", used: 0, comment: "邮箱"),
+        ProxyRule(type: .domainSuffix, value: "www.fanatical.com", policy: "AI专用", used: 0, comment: "游戏"),
+    ]
+    
+    @State private var searchText = ""
+    @State private var showingAddRule = false
+    @State private var editingRule: ProxyRule?
+    @State private var selectedRules = Set<UUID>()
+    
+    var filteredRules: [ProxyRule] {
+        if searchText.isEmpty {
+            return rules
+        }
+        return rules.filter { rule in
+            rule.value.localizedCaseInsensitiveContains(searchText) ||
+            rule.policy.localizedCaseInsensitiveContains(searchText) ||
+            rule.comment.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Rule")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                
+                Spacer()
+                
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .frame(width: 200)
+                }
+                .padding(6)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(6)
+            }
+            .padding()
+            
+            Text("Rules are evaluated in priority order, from top to bottom.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            
+            Divider()
+            
+            // Rules table
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Table header
+                    HStack(spacing: 12) {
+                        Toggle("", isOn: .constant(false))
+                            .labelsHidden()
+                            .frame(width: 30)
+                        
+                        Text("ID")
+                            .frame(width: 40, alignment: .leading)
+                        Text("Type")
+                            .frame(width: 140, alignment: .leading)
+                        Text("Value")
+                            .frame(minWidth: 250, alignment: .leading)
+                        Text("Policy")
+                            .frame(width: 100, alignment: .leading)
+                        Text("Used")
+                            .frame(width: 60, alignment: .leading)
+                        Text("Comment")
+                            .frame(minWidth: 100, alignment: .leading)
+                        
+                        Spacer()
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                    
+                    // Rules list
+                    ForEach(Array(filteredRules.enumerated()), id: \.element.id) { index, rule in
+                        RuleRow(
+                            index: index + 11,
+                            rule: rule,
+                            isSelected: selectedRules.contains(rule.id),
+                            onToggle: { toggleRule(rule) },
+                            onEdit: { editingRule = rule },
+                            onDelete: { deleteRule(rule) }
+                        )
+                        .contextMenu {
+                            Button("Edit") { editingRule = rule }
+                            Button("Duplicate") { duplicateRule(rule) }
+                            Divider()
+                            Button("Delete", role: .destructive) { deleteRule(rule) }
+                        }
+                    }
+                }
+            }
+            
+            Divider()
+            
+            // Bottom toolbar
+            HStack {
+                Menu {
+                    Button("Standard Rule") { showingAddRule = true }
+                    Button("AND/OR/NOT Rule") { }
+                    Button("Ruleset") { }
+                } label: {
+                    HStack {
+                        Image(systemName: "plus")
+                        Text("Add")
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                
+                Menu {
+                    Button("Export as JSON") { exportRules() }
+                    Button("Import from JSON") { importRules() }
+                    Divider()
+                    Button("Export as Surge Format") { exportSurgeFormat() }
+                    Button("Import from Surge Format") { importSurgeFormat() }
+                } label: {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up.on.square")
+                        Text("Import/Export")
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                
+                Spacer()
+                
+                Button("Reset Counter") {
+                    resetCounters()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding()
+            .background(Color(NSColor.windowBackgroundColor))
+        }
+        .sheet(isPresented: $showingAddRule) {
+            RuleEditorSheet(rule: nil) { newRule in
+                rules.append(newRule)
+            }
+        }
+        .sheet(item: $editingRule) { rule in
+            RuleEditorSheet(rule: rule) { updatedRule in
+                if let index = rules.firstIndex(where: { $0.id == rule.id }) {
+                    rules[index] = updatedRule
+                }
+            }
+        }
+    }
+    
+    private func toggleRule(_ rule: ProxyRule) {
+        if let index = rules.firstIndex(where: { $0.id == rule.id }) {
+            rules[index].enabled.toggle()
+        }
+    }
+    
+    private func deleteRule(_ rule: ProxyRule) {
+        rules.removeAll { $0.id == rule.id }
+    }
+    
+    private func duplicateRule(_ rule: ProxyRule) {
+        var newRule = rule
+        // Create new rule with new ID
+        let duplicated = ProxyRule(
+            id: UUID(),
+            enabled: newRule.enabled,
+            type: newRule.type,
+            value: newRule.value,
+            policy: newRule.policy,
+            used: 0,
+            comment: newRule.comment
+        )
+        rules.append(duplicated)
+    }
+    
+    private func resetCounters() {
+        for i in 0..<rules.count {
+            rules[i].used = 0
+        }
+    }
+    
+    private func exportSurgeFormat() {
+        let content = exportToSurgeFormat()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.text]
+        panel.nameFieldStringValue = "surge_rules.conf"
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                try? content.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+    
+    private func importSurgeFormat() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.text]
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                if let content = try? String(contentsOf: url) {
+                    importFromSurgeFormat(content)
+                }
+            }
+        }
+    }
+}
+
+struct RuleRow: View {
+    let index: Int
+    let rule: ProxyRule
+    let isSelected: Bool
+    let onToggle: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Toggle("", isOn: .constant(rule.enabled))
+                .labelsHidden()
+                .frame(width: 30)
+                .onChange(of: rule.enabled) { _ in onToggle() }
+            
+            Text("\(index)")
+                .frame(width: 40, alignment: .leading)
+                .foregroundColor(.secondary)
+            
+            Text(rule.type.displayName)
+                .frame(width: 140, alignment: .leading)
+                .font(.system(.body, design: .monospaced))
+            
+            Text(rule.value)
+                .frame(minWidth: 250, alignment: .leading)
+                .lineLimit(1)
+            
+            HStack(spacing: 4) {
+                if rule.policy == "工作" {
+                    Text("🛠️")
+                } else if rule.policy == "国家" {
+                    Text("🇨🇳")
+                } else if rule.policy == "网易超级" {
+                    Text("❤️")
+                } else if rule.policy == "AI专用" {
+                    Text("🛡️")
+                }
+                Text(rule.policy)
+            }
+            .frame(width: 100, alignment: .leading)
+            
+            Text("\(rule.used)")
+                .frame(width: 60, alignment: .leading)
+                .foregroundColor(.secondary)
+            
+            Text(rule.comment)
+                .frame(minWidth: 100, alignment: .leading)
+                .foregroundColor(.secondary)
+            
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(isSelected ? Color.blue.opacity(0.1) : Color.clear)
+        .onTapGesture(count: 2) {
+            onEdit()
+        }
+    }
+}
+
+struct RuleEditorSheet: View {
+    let rule: ProxyRule?
+    let onSave: (ProxyRule) -> Void
+    
+    @Environment(\.dismiss) var dismiss
+    
+    @State private var ruleType: RuleType
+    @State private var value: String
+    @State private var policy: String
+    @State private var comment: String
+    @State private var showNotification = false
+    @State private var notificationText = ""
+    @State private var notificationDelay = 300
+    @State private var extendedMatching = false
+    
+    init(rule: ProxyRule?, onSave: @escaping (ProxyRule) -> Void) {
+        self.rule = rule
+        self.onSave = onSave
+        
+        _ruleType = State(initialValue: rule?.type ?? .domain)
+        _value = State(initialValue: rule?.value ?? "")
+        _policy = State(initialValue: rule?.policy ?? "DIRECT")
+        _comment = State(initialValue: rule?.comment ?? "")
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(rule == nil ? "New Standard Rule" : "Edit Rule")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+            .padding()
+            
+            Divider()
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Rule section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Rule")
+                            .font(.headline)
+                        
+                        HStack {
+                            Text("Rule Type:")
+                                .frame(width: 100, alignment: .trailing)
+                            
+                            Picker("", selection: $ruleType) {
+                                ForEach(RuleType.allCases, id: \.self) { type in
+                                    Text(type.displayName).tag(type)
+                                }
+                            }
+                            .frame(width: 200)
+                            
+                            Spacer()
+                        }
+                        
+                        Text(ruleType.description)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 100)
+                        
+                        HStack {
+                            Text("Domain:")
+                                .frame(width: 100, alignment: .trailing)
+                            
+                            TextField(getPlaceholder(), text: $value)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 350)
+                            
+                            Spacer()
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    // Action section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Action")
+                            .font(.headline)
+                        
+                        HStack {
+                            Text("Use Policy:")
+                                .frame(width: 100, alignment: .trailing)
+                            
+                            Picker("", selection: $policy) {
+                                Text("DIRECT").tag("DIRECT")
+                                Text("PROXY").tag("PROXY")
+                                Text("REJECT").tag("REJECT")
+                                Text("工作").tag("工作")
+                                Text("国家").tag("国家")
+                                Text("AI专用").tag("AI专用")
+                            }
+                            .frame(width: 200)
+                            
+                            Spacer()
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    // Misc section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Misc")
+                            .font(.headline)
+                        
+                        HStack {
+                            Text("Comment:")
+                                .frame(width: 100, alignment: .trailing)
+                            
+                            TextField("Comment", text: $comment)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 350)
+                            
+                            Spacer()
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    // Options section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Options")
+                            .font(.headline)
+                        
+                        Toggle("Show a notification when the rule is matched", isOn: $showNotification)
+                        
+                        if showNotification {
+                            HStack {
+                                TextField("Notification Text", text: $notificationText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 300)
+                            }
+                            .padding(.leading, 20)
+                            
+                            HStack {
+                                Text("Show the next notification only after")
+                                TextField("", value: $notificationDelay, format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 80)
+                                Text("seconds")
+                            }
+                            .padding(.leading, 20)
+                        }
+                        
+                        Toggle("Extended Matching", isOn: $extendedMatching)
+                        
+                        if extendedMatching {
+                            Text("After enabling this option, the rule will try to match both the SNI of HTTPS requests and the Host field of HTTP requests at the same time.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 20)
+                        }
+                    }
+                }
+                .padding()
+            }
+            
+            Divider()
+            
+            // Footer buttons
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                Button("Done") {
+                    let newRule = ProxyRule(
+                        id: rule?.id ?? UUID(),
+                        enabled: rule?.enabled ?? true,
+                        type: ruleType,
+                        value: value,
+                        policy: policy,
+                        used: rule?.used ?? 0,
+                        comment: comment
+                    )
+                    onSave(newRule)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(value.isEmpty)
+            }
+            .padding()
+        }
+        .frame(width: 700, height: 600)
+    }
+    
+    private func getPlaceholder() -> String {
+        switch ruleType {
+        case .domain, .domainSuffix, .domainKeyword, .domainWildcard:
+            return "example.com"
+        case .ipCidr, .ipCidr6:
+            return "192.168.0.0/16"
+        case .processName:
+            return "Safari"
+        case .urlRegex:
+            return "^https?://.*\\.example\\.com"
+        default:
+            return "Value"
+        }
+    }
+}
+
+#Preview {
+    CompleteRuleView()
+        .frame(width: 1000, height: 700)
+}

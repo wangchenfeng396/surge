@@ -1,0 +1,132 @@
+//
+//  RuleImportExport.swift
+//  SurgeProxy
+//
+//  Rule import/export functionality
+//
+
+import Foundation
+import SwiftUI
+
+extension CompleteRuleView {
+    func exportRules() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json, .text]
+        panel.nameFieldStringValue = "surge_rules.json"
+        
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                do {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(rules)
+                    try data.write(to: url)
+                } catch {
+                    print("Failed to export rules: \(error)")
+                }
+            }
+        }
+    }
+    
+    func importRules() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        
+        panel.begin { response in
+            if response == .OK, let url = panel.urls.first {
+                do {
+                    let data = try Data(contentsOf: url)
+                    let decoder = JSONDecoder()
+                    let importedRules = try decoder.decode([ProxyRule].self, from: data)
+                    rules.append(contentsOf: importedRules)
+                } catch {
+                    print("Failed to import rules: \(error)")
+                }
+            }
+        }
+    }
+    
+    func exportToSurgeFormat() -> String {
+        var output = "[Rule]\n"
+        
+        for rule in rules where rule.enabled {
+            var line = "\(rule.type.rawValue), \(rule.value), \(rule.policy)"
+            if !rule.comment.isEmpty {
+                line += " // \(rule.comment)"
+            }
+            output += line + "\n"
+        }
+        
+        return output
+    }
+    
+    func importFromSurgeFormat(_ content: String) {
+        let lines = content.components(separatedBy: .newlines)
+        var importedRules: [ProxyRule] = []
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // Skip empty lines and comments
+            if trimmed.isEmpty || trimmed.hasPrefix("#") || trimmed.hasPrefix("[") {
+                continue
+            }
+            
+            // Parse rule line
+            let parts = trimmed.components(separatedBy: ",")
+            guard parts.count >= 3 else { continue }
+            
+            let typeStr = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            var policyAndComment = parts[2...].joined(separator: ",")
+            
+            // Extract comment
+            var comment = ""
+            if let commentIndex = policyAndComment.range(of: "//") {
+                comment = String(policyAndComment[commentIndex.upperBound...])
+                    .trimmingCharacters(in: .whitespaces)
+                policyAndComment = String(policyAndComment[..<commentIndex.lowerBound])
+            }
+            
+            let policy = policyAndComment.trimmingCharacters(in: .whitespaces)
+            
+            // Create rule
+            if let ruleType = RuleType(rawValue: typeStr) {
+                let rule = ProxyRule(
+                    type: ruleType,
+                    value: value,
+                    policy: policy,
+                    comment: comment
+                )
+                importedRules.append(rule)
+            }
+        }
+        
+        rules.append(contentsOf: importedRules)
+    }
+}
+
+// Add import/export buttons to CompleteRuleView
+struct RuleImportExportButtons: View {
+    let onExport: () -> Void
+    let onImport: () -> Void
+    let onExportSurge: () -> Void
+    let onImportSurge: () -> Void
+    
+    var body: some View {
+        Menu {
+            Button("Export as JSON") { onExport() }
+            Button("Import from JSON") { onImport() }
+            Divider()
+            Button("Export as Surge Format") { onExportSurge() }
+            Button("Import from Surge Format") { onImportSurge() }
+        } label: {
+            HStack {
+                Image(systemName: "square.and.arrow.up.on.square")
+                Text("Import/Export")
+            }
+        }
+        .menuStyle(.borderlessButton)
+    }
+}

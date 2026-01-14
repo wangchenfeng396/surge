@@ -1,0 +1,225 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+"os"
+	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+	"github.com/surge-proxy/surge-go/internal/singbox"
+	"github.com/surge-proxy/surge-go/internal/stats"
+)
+
+// Server represents the API server
+type Server struct {
+	router    *mux.Router
+	wrapper   *singbox.Wrapper
+	collector *stats.Collector
+	upgrader  websocket.Upgrader
+}
+
+// NewServerWithSingBox creates API server with sing-box wrapper
+func NewServerWithSingBox(wrapper *singbox.Wrapper, collector *stats.Collector) *Server {
+	s := &Server{
+		wrapper:   wrapper,
+		collector: collector,
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		},
+	}
+
+	s.setupRoutes()
+	return s
+}
+
+// setupRoutes configures API routes
+func (s *Server) setupRoutes() {
+	s.router = mux.NewRouter()
+
+	// Stats endpoints
+	s.router.HandleFunc("/api/stats", s.handleStats).Methods("GET")
+	s.router.HandleFunc("/api/proxies", s.handleProxies).Methods("GET")
+
+	// Control endpoints
+	s.router.HandleFunc("/api/proxy/start", s.handleStart).Methods("POST")
+	s.router.HandleFunc("/api/proxy/stop", s.handleStop).Methods("POST")
+	s.router.HandleFunc("/api/config", s.handleUpdateConfig).Methods("POST")
+
+	// Rules endpoints
+	s.router.HandleFunc("/api/rules", s.handleGetRules).Methods("GET")
+	s.router.HandleFunc("/api/rules", s.handleUpdateRules).Methods("POST")
+
+	// WebSocket
+	s.router.HandleFunc("/ws", s.handleWebSocket)
+
+	// CORS
+	s.router.Use(corsMiddleware)
+}
+
+// Start starts the API server
+func (s *Server) Start() error {
+	log.Println("Starting API server on :9090")
+	return http.ListenAndServe(":9090", s.router)
+}
+
+// Handlers
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats := s.wrapper.GetStats()
+	respondJSON(w, stats)
+}
+
+func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
+	proxies := s.wrapper.GetProxyList()
+	respondJSON(w, map[string]interface{}{
+		"proxies": proxies,
+	})
+}
+
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	if err := s.wrapper.Start(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if err := s.wrapper.Stop(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Config string `json:"config"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	converter := singbox.NewConverter()
+	jsonConfig, err := converter.SurgeToSingBoxJSON(req.Config)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to convert config: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.wrapper.ReloadJSON(jsonConfig); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		stats := s.wrapper.GetStats()
+		if err := conn.WriteJSON(stats); err != nil {
+			break
+		}
+	}
+}
+
+func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
+	// Return current rules from config
+	// For now, return empty array - will be populated from actual config
+	rules := []string{
+		"DOMAIN,google.com,DIRECT",
+		"DOMAIN-SUFFIX,apple.com,DIRECT",
+		"GEOIP,CN,DIRECT",
+		"FINAL,PROXY",
+	}
+	respondJSON(w, map[string]interface{}{
+		"rules": rules,
+	})
+}
+
+func (s *Server) handleUpdateRules(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Rules []string `json:"rules"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// TODO: Update sing-box config with new rules
+	// For now, just acknowledge receipt
+	log.Printf("Received %d rules for update", len(req.Rules))
+
+	respondJSON(w, map[string]string{"status": "updated"})
+}
+
+// Helper functions
+
+func respondJSON(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile("surge.conf")
+	if err != nil {
+		http.Error(w, "Config not found", 404)
+		return
+	}
+	respondJSON(w, map[string]string{"config": string(data)})
+}
+
+func (s *Server) handleSwitchProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group string `json:"group"`
+		Proxy string `json:"proxy"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	log.Printf("Switching proxy in group %s to %s", req.Group, req.Proxy)
+	respondJSON(w, map[string]string{"status": "switched", "group": req.Group, "proxy": req.Proxy})
+}
+
+func (s *Server) handleToggleProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	log.Printf("Toggling proxy %s to %v", req.Name, req.Enabled)
+	respondJSON(w, map[string]string{"status": "updated", "name": req.Name})
+}

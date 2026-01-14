@@ -1,0 +1,8 @@
+# No external dependencies required
+# Standard library only:
+# - socket
+# - select
+# - threading
+# - logging
+# - json
+# - pathlib

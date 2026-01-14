@@ -1,0 +1,24 @@
+[Unit]
+Description=Surge-Go Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+User=surge
+Group=surge
+ExecStart=/usr/local/bin/surge -c /etc/surge/surge.conf
+Restart=on-failure
+RestartSec=5s
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/surge
+
+# 资源限制
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

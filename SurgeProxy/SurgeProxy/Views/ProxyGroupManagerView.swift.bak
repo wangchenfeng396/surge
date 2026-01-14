@@ -1,0 +1,252 @@
+//
+//  ProxyGroupManagerView.swift
+//  SurgeProxy
+//
+//  Proxy group management view
+//
+
+import SwiftUI
+
+struct ProxyGroupManagerView: View {
+    @State private var groups: [ProxyGroup] = []
+    @State private var availableProxies: [String] = ["DIRECT", "REJECT"]
+    @State private var showingAddGroup = false
+    @State private var editingGroup: ProxyGroup?
+    
+    var body: some View {
+        VStack {
+            if groups.isEmpty {
+                emptyState
+            } else {
+                groupList
+            }
+        }
+        .navigationTitle("Proxy Groups")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { showingAddGroup = true }) {
+                    Label("Add Group", systemImage: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showingAddGroup) {
+            ProxyGroupEditorView(group: nil, availableProxies: availableProxies) { newGroup in
+                groups.append(newGroup)
+            }
+        }
+        .sheet(item: $editingGroup) { group in
+            ProxyGroupEditorView(group: group, availableProxies: availableProxies) { updatedGroup in
+                if let index = groups.firstIndex(where: { $0.id == updatedGroup.id }) {
+                    groups[index] = updatedGroup
+                }
+            }
+        }
+        .onAppear(perform: loadGroups)
+    }
+    
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 60))
+                .foregroundColor(.secondary)
+            Text("No Proxy Groups")
+                .font(.title2)
+            Text("Create proxy groups to organize your proxies")
+                .foregroundColor(.secondary)
+            Button("Add First Group") {
+                showingAddGroup = true
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    private var groupList: some View {
+        List {
+            ForEach(groups) { group in
+                ProxyGroupRow(group: group)
+                    .onTapGesture {
+                        editingGroup = group
+                    }
+                    .contextMenu {
+                        Button("Edit") {
+                            editingGroup = group
+                        }
+                        Button("Duplicate") {
+                            duplicateGroup(group)
+                        }
+                        Divider()
+                        Button("Delete", role: .destructive) {
+                            deleteGroup(group)
+                        }
+                    }
+            }
+            .onMove(perform: moveGroups)
+            .onDelete(perform: deleteGroups)
+        }
+    }
+    
+    private func loadGroups() {
+        // Load from UserDefaults or file
+        if let data = UserDefaults.standard.data(forKey: "ProxyGroups"),
+           let decoded = try? JSONDecoder().decode([ProxyGroup].self, from: data) {
+            groups = decoded
+        }
+    }
+    
+    private func saveGroups() {
+        if let encoded = try? JSONEncoder().encode(groups) {
+            UserDefaults.standard.set(encoded, forKey: "ProxyGroups")
+        }
+    }
+    
+    private func duplicateGroup(_ group: ProxyGroup) {
+        var newGroup = group
+        newGroup.id = UUID()
+        newGroup.name = "\(group.name) Copy"
+        groups.append(newGroup)
+        saveGroups()
+    }
+    
+    private func deleteGroup(_ group: ProxyGroup) {
+        groups.removeAll { $0.id == group.id }
+        saveGroups()
+    }
+    
+    private func deleteGroups(at offsets: IndexSet) {
+        groups.remove(atOffsets: offsets)
+        saveGroups()
+    }
+    
+    private func moveGroups(from source: IndexSet, to destination: Int) {
+        groups.move(fromOffsets: source, toOffset: destination)
+        saveGroups()
+    }
+}
+
+struct ProxyGroupRow: View {
+    let group: ProxyGroup
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(group.name)
+                    .font(.headline)
+                Spacer()
+                Text(group.type.displayName)
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.2))
+                    .cornerRadius(4)
+            }
+            
+            if !group.proxies.isEmpty {
+                Text("\(group.proxies.count) proxies")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            if let testURL = group.testURL {
+                Text("Test: \(testURL)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct ProxyGroupEditorView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var group: ProxyGroup
+    let availableProxies: [String]
+    let onSave: (ProxyGroup) -> Void
+    
+    init(group: ProxyGroup?, availableProxies: [String], onSave: @escaping (ProxyGroup) -> Void) {
+        self._group = State(initialValue: group ?? ProxyGroup(name: "", type: .select))
+        self.availableProxies = availableProxies
+        self.onSave = onSave
+    }
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Basic") {
+                    TextField("Group Name", text: $group.name)
+                    
+                    Picker("Type", selection: $group.type) {
+                        ForEach(ProxyGroupType.allCases, id: \.self) { type in
+                            Text(type.displayName).tag(type)
+                        }
+                    }
+                }
+                
+                Section("Proxies") {
+                    ForEach(availableProxies, id: \.self) { proxy in
+                        Toggle(proxy, isOn: Binding(
+                            get: { group.proxies.contains(proxy) },
+                            set: { isOn in
+                                if isOn {
+                                    group.proxies.append(proxy)
+                                } else {
+                                    group.proxies.removeAll { $0 == proxy }
+                                }
+                            }
+                        ))
+                    }
+                }
+                
+                if group.type == .urlTest || group.type == .smart {
+                    Section("Testing") {
+                        TextField("Test URL", text: Binding(
+                            get: { group.testURL ?? "" },
+                            set: { group.testURL = $0.isEmpty ? nil : $0 }
+                        ))
+                        
+                        TextField("Interval (seconds)", value: Binding(
+                            get: { group.interval ?? 600 },
+                            set: { group.interval = $0 }
+                        ), format: .number)
+                    }
+                }
+                
+                Section("Advanced") {
+                    Toggle("No Alert", isOn: $group.noAlert)
+                    Toggle("Hidden", isOn: $group.hidden)
+                    Toggle("Include All Proxies", isOn: $group.includeAllProxies)
+                    
+                    TextField("Policy Regex Filter", text: Binding(
+                        get: { group.policyRegexFilter ?? "" },
+                        set: { group.policyRegexFilter = $0.isEmpty ? nil : $0 }
+                    ))
+                    
+                    TextField("Policy Path (URL)", text: Binding(
+                        get: { group.policyPath ?? "" },
+                        set: { group.policyPath = $0.isEmpty ? nil : $0 }
+                    ))
+                }
+            }
+            .navigationTitle(group.name.isEmpty ? "New Group" : "Edit Group")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(group)
+                        dismiss()
+                    }
+                    .disabled(group.name.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+#Preview {
+    NavigationView {
+        ProxyGroupManagerView()
+    }
+}

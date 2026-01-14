@@ -1,0 +1,149 @@
+//
+//  AdvancedRuleTypes.swift
+//  SurgeProxy
+//
+//  Advanced rule types: AND/OR/NOT and Ruleset
+//
+
+import Foundation
+
+// Advanced rule types
+enum AdvancedRuleType: String, Codable {
+    case and = "AND"
+    case or = "OR"
+    case not = "NOT"
+    case ruleset = "RULE-SET"
+}
+
+// Composite rule for AND/OR/NOT logic
+struct CompositeRule: Identifiable, Codable {
+    let id: UUID
+    var enabled: Bool
+    var type: AdvancedRuleType
+    var subrules: [ProxyRule]
+    var policy: String
+    var comment: String
+    
+    init(id: UUID = UUID(), enabled: Bool = true, type: AdvancedRuleType, subrules: [ProxyRule], policy: String, comment: String = "") {
+        self.id = id
+        self.enabled = enabled
+        self.type = type
+        self.subrules = subrules
+        self.policy = policy
+        self.comment = comment
+    }
+    
+    // Convert to Surge format
+    func toSurgeFormat() -> String {
+        var output = "\(type),("
+        
+        switch type {
+        case .and, .or:
+            let ruleStrings = subrules.map { "\($0.type),\($0.value)" }
+            output += ruleStrings.joined(separator: ",")
+        case .not:
+            if let first = subrules.first {
+                output += "\(first.type),\(first.value)"
+            }
+        case .ruleset:
+            // Ruleset is handled separately
+            return ""
+        }
+        
+        output += "),\(policy)"
+        
+        if !comment.isEmpty {
+            output += " // \(comment)"
+        }
+        
+        return output
+    }
+}
+
+// Ruleset reference
+struct RulesetReference: Identifiable, Codable {
+    let id: UUID
+    var enabled: Bool
+    var name: String
+    var url: String
+    var policy: String
+    var updateInterval: Int // hours
+    var lastUpdated: Date?
+    var ruleCount: Int
+    
+    init(id: UUID = UUID(), enabled: Bool = true, name: String, url: String, policy: String, updateInterval: Int = 24, lastUpdated: Date? = nil, ruleCount: Int = 0) {
+        self.id = id
+        self.enabled = enabled
+        self.name = name
+        self.url = url
+        self.policy = policy
+        self.updateInterval = updateInterval
+        self.lastUpdated = lastUpdated
+        self.ruleCount = ruleCount
+    }
+    
+    // Convert to Surge format
+    func toSurgeFormat() -> String {
+        var output = "RULE-SET,\(url),\(policy)"
+        return output
+    }
+}
+
+// Rule manager to handle all rule types
+class RuleManager: ObservableObject {
+    @Published var standardRules: [ProxyRule] = []
+    @Published var compositeRules: [CompositeRule] = []
+    @Published var rulesets: [RulesetReference] = []
+    
+    // Export all rules to Surge format
+    func exportAllToSurgeFormat() -> String {
+        var output = "[Rule]\n"
+        
+        // Standard rules
+        for rule in standardRules where rule.enabled {
+            var line = "\(rule.type), \(rule.value), \(rule.policy)"
+            if !rule.comment.isEmpty {
+                line += " // \(rule.comment)"
+            }
+            output += line + "\n"
+        }
+        
+        // Composite rules
+        for rule in compositeRules where rule.enabled {
+            output += rule.toSurgeFormat() + "\n"
+        }
+        
+        // Rulesets
+        for ruleset in rulesets where ruleset.enabled {
+            output += ruleset.toSurgeFormat() + "\n"
+        }
+        
+        return output
+    }
+    
+    // Download and update a ruleset
+    func updateRuleset(_ ruleset: RulesetReference, completion: @escaping (Result<Int, Error>) -> Void) {
+        guard let url = URL(string: ruleset.url) else {
+            completion(.failure(NSError(domain: "Invalid URL", code: -1)))
+            return
+        }
+        
+        URLSession.shared.dataTask(with: url) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data, let content = String(data: data, encoding: .utf8) else {
+                completion(.failure(NSError(domain: "Invalid data", code: -1)))
+                return
+            }
+            
+            // Count rules in the ruleset
+            let lines = content.components(separatedBy: .newlines)
+            let ruleCount = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }.count
+            
+            completion(.success(ruleCount))
+        }.resume()
+    }
+}
